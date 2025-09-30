@@ -1,0 +1,86 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// -------------------- MODELS --------------------
+
+// NEW: User model for authentication
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String
+  password  String
+  role      Role     @default(PATIENT)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // A user can have one patient profile
+  patient Patient?
+}
+
+// Patients Table - NOW LINKED TO A USER
+model Patient {
+  id        String   @id @default(cuid())
+  name      String
+  dob       DateTime
+  phone     String   @unique
+  email     String?  @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Foreign Key to link to the User model
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id])
+
+  // Relations
+  appointments Appointment[]
+}
+
+// Doctors Table (no changes needed)
+model Doctor {
+  id             String        @id @default(cuid())
+  name           String
+  specialization String
+  phone          String        @unique
+  email          String?       @unique
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  appointments   Appointment[]
+}
+
+// Appointment Table (no changes needed)
+model Appointment {
+  id                String    @id @default(cuid())
+  appointmentDate   DateTime
+  reasonForVisit    String
+  durationInMinutes Int       @default(30)
+  status            Status    @default(Scheduled)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  patientId         String
+  doctorId          String
+  patient           Patient   @relation(fields: [patientId], references: [id])
+  doctor            Doctor    @relation(fields: [doctorId], references: [id])
+}
+
+// --- Enums ---
+
+// NEW: Role enum to differentiate users
+enum Role {
+  ADMIN
+  PATIENT
+}
+
+enum Status {
+  Scheduled
+  Completed
+  Cancelled
+}

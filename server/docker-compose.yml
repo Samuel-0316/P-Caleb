@@ -1,0 +1,16 @@
+version: '3.8'
+services:
+  db:
+    image: postgres:16
+    restart: always
+    environment:
+      POSTGRES_USER: samuel
+      POSTGRES_PASSWORD: samuel@2004
+      POSTGRES_DB: clinicdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
