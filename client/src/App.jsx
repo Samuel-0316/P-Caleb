@@ -6,7 +6,9 @@ import toast, { Toaster } from 'react-hot-toast';
 import { Calendar, Clock, User, Phone, Stethoscope, MessageSquare, PlusCircle, Trash2, Edit, BriefcaseMedical, Filter, X, LogOut, Mail, Lock, KeyRound } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
-const api = axios.create({ baseURL: 'http://localhost:5000/api' });
+// const api = axios.create({ baseURL: 'http://localhost:5000/api' });
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+const api = axios.create({ baseURL: API_BASE_URL });
 api.interceptors.request.use(config => {
     const token = localStorage.getItem('token');
     if (token) config.headers['x-auth-token'] = token;
