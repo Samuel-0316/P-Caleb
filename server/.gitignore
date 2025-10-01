@@ -3,5 +3,3 @@ node_modules
 .env
 
 /generated/prisma
-20250903144015_init
-20250903185543_init_setup
