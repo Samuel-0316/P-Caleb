@@ -53,7 +53,31 @@ router.post('/', async (req, res) => {
     try {
         let patientRecord;
         let nameInfo = null;
-        if (req.user.role === 'ADMIN') {
+        
+        // Check if this is a chatbot request (no req.user) or authenticated request
+        const isChatbotRequest = !req.user;
+        
+        if (isChatbotRequest) {
+            // Chatbot request - find or create patient by phone
+            if (!patient || !patient.phone) {
+                return res.status(400).json({ msg: 'Patient phone number is required.' });
+            }
+            
+            patientRecord = await prisma.patient.findUnique({ where: { phone: patient.phone } });
+            
+            if (!patientRecord) {
+                // Create a new patient record for chatbot bookings
+                // Note: This creates a patient WITHOUT a userId (no login)
+                patientRecord = await prisma.patient.create({
+                    data: {
+                        name: patient.name,
+                        phone: patient.phone,
+                        email: patient.email || `${patient.phone}@temp.com`,
+                        // userId is optional, so we don't set it
+                    }
+                });
+            }
+        } else if (req.user.role === 'ADMIN') {
             if (!patient || !patient.phone) return res.status(400).json({ msg: 'Patient phone number is required.' });
             patientRecord = await prisma.patient.findUnique({ where: { phone: patient.phone } });
             if (!patientRecord) {
@@ -150,6 +174,39 @@ router.delete('/:id', async (req, res) => {
         res.json({ msg: 'Appointment cancelled successfully.', appointment: cancelledAppointment });
     } catch (error) {
         res.status(500).json({ msg: 'Server error.' });
+    }
+});
+
+// GET /api/appointments/patient/:patientId - Get appointments for a specific patient (for chatbot)
+// This is a public endpoint used by the chatbot - no auth required
+router.get('/patient/:patientId', async (req, res) => {
+    const { patientId } = req.params;
+    try {
+        // First, try to find by patient record ID
+        let appointments = await prisma.appointment.findMany({
+            where: { patientId: patientId },
+            include: { patient: true, doctor: true },
+            orderBy: { appointmentDate: 'asc' }
+        });
+        
+        // If not found, try to find by userId (in case patientId is actually userId)
+        if (appointments.length === 0) {
+            const patientProfile = await prisma.patient.findUnique({ 
+                where: { userId: patientId } 
+            });
+            if (patientProfile) {
+                appointments = await prisma.appointment.findMany({
+                    where: { patientId: patientProfile.id },
+                    include: { patient: true, doctor: true },
+                    orderBy: { appointmentDate: 'asc' }
+                });
+            }
+        }
+        
+        res.json(appointments);
+    } catch (error) {
+        console.error("Error fetching patient appointments:", error);
+        res.status(500).json({ msg: "Server error while fetching appointments." });
     }
 });
 
