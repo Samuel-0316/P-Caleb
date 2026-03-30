@@ -1,0 +1,17 @@
+fastapi==0.104.1fastapi==0.104.1fastapi
+
+uvicorn==0.24.0
+
+google-generativeai==0.3.1uvicorn==0.24.0uvicorn
+
+python-dotenv==1.0.0
+
+httpx==0.25.1google-generativeai==0.3.1langchain
+
+pydantic==2.5.0
+
+python-dotenv==1.0.0langchain-community
+
+httpx==0.25.1psycopg2-binary
+
+pydantic==2.5.0python-dotenv

@@ -5,6 +5,7 @@ import { format, isSameDay, parseISO } from 'date-fns';
 import toast, { Toaster } from 'react-hot-toast';
 import { Calendar, Clock, User, Phone, Stethoscope, MessageSquare, PlusCircle, Trash2, Edit, BriefcaseMedical, Filter, X, LogOut, Mail, Lock, KeyRound } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import Chatbot from './components/Chatbot';
 
 // const api = axios.create({ baseURL: 'http://localhost:5000/api' });
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
@@ -257,8 +258,6 @@ const SchedulerApp = () => {
         setIsAppointmentModalOpen(true);
     };
 
-    // --- END OF RESTORED CODE ---
-
     return (
         <div className="bg-slate-50 min-h-screen">
             <div className="container mx-auto p-4 md:p-8">
@@ -284,6 +283,7 @@ const SchedulerApp = () => {
             <AppointmentModal isOpen={isAppointmentModalOpen} onClose={closeAppointmentModal} onSubmit={handleSubmit(onAppointmentSubmit)} register={register} errors={errors} doctors={doctors} isEditing={!!editingAppointment} isPatient={user.role === 'PATIENT'} />
             {user.role === 'ADMIN' && <AddDoctorModal isOpen={isDoctorModalOpen} onClose={() => setIsDoctorModalOpen(false)} formMethods={doctorForm} onSubmit={onAddDoctor} />}
             {user.role === 'ADMIN' && <RegisterPatientModal isOpen={isRegisterPatientModalOpen} onClose={() => setIsRegisterPatientModalOpen(false)} onSubmit={handlePatientSubmit(onAdminCreatePatientAndBook)} register={registerPatient} errors={patientErrors} initialData={newPatientData} />}
+            <Chatbot />
         </div>
     );
 };

@@ -38,9 +38,15 @@ app.use(cors(corsOptions));
 app.use(express.json());
 
 // API Routes
+
 app.use('/api/auth', authRoutes); // Public auth routes
 
-// Protected Routes
+// Public chatbot endpoints (no auth required)
+// These are used by the chatbot service to access data
+app.use('/api/chatbot/appointments', appointmentRoutes); 
+app.use('/api/chatbot/doctors', doctorRoutes);
+
+// Protected Routes (require authentication)
 app.use('/api/appointments', authMiddleware, appointmentRoutes);
 app.use('/api/doctors', authMiddleware, doctorRoutes);
 app.use('/api/patients', authMiddleware, patientRoutes);
