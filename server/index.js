@@ -17,7 +17,8 @@ const PORT = process.env.PORT || 5000;
 // CORS Configuration
 const allowedOrigins = [
     'http://localhost:5173', // For local development
-    'https://clinic-management-omega.vercel.app' // Your deployed Vercel frontend URL
+    'http://localhost:3000',  // Alternative local dev
+    ...(process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : []) // Production URLs from env
 ];
 
 const corsOptions = {

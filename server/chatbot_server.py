@@ -9,10 +9,14 @@ from pydantic import BaseModel
 from typing import Optional, Dict, Any
 import logging
 from datetime import datetime
+import os
+from dotenv import load_dotenv
 
 from gemini_config import get_gemini_model, format_function_response
 from session_manager import session_manager
 from function_tools import FUNCTION_MAP
+
+load_dotenv('.env.chatbot')
 
 # Configure logging
 logging.basicConfig(
@@ -28,10 +32,18 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Configure CORS
+# Configure CORS - environment-driven for production
+cors_origins = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+]
+# Add production origins from environment variable
+if os.getenv('CORS_ORIGINS'):
+    cors_origins.extend(os.getenv('CORS_ORIGINS').split(','))
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],  # React app URLs
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
