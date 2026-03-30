@@ -154,7 +154,8 @@ const Chatbot = () => {
         }
         
         // Send message to Python agent backend
-        const response = await fetch('http://localhost:8000/api/chatbot', {
+        const chatbotUrl = import.meta.env.VITE_CHATBOT_URL || 'http://localhost:8000/api/chatbot';
+        const response = await fetch(chatbotUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
