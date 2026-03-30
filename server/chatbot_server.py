@@ -36,8 +36,9 @@ app = FastAPI(
 cors_origins = [
     "http://localhost:5173",
     "http://localhost:3000",
+    "https://p-caleb.vercel.app",  # Production frontend
 ]
-# Add production origins from environment variable
+# Add additional production origins from environment variable
 if os.getenv('CORS_ORIGINS'):
     cors_origins.extend(os.getenv('CORS_ORIGINS').split(','))
 

@@ -18,7 +18,8 @@ const PORT = process.env.PORT || 5000;
 const allowedOrigins = [
     'http://localhost:5173', // For local development
     'http://localhost:3000',  // Alternative local dev
-    ...(process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : []) // Production URLs from env
+    'https://p-caleb.vercel.app', // Production frontend
+    ...(process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : []) // Additional URLs from env
 ];
 
 const corsOptions = {
