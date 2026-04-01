@@ -4,19 +4,105 @@ Defines the functions that Gemini can call to interact with the clinic system
 """
 
 import httpx
-from typing import List, Dict, Optional
-from datetime import datetime
-import os
-from dotenv import load_dotenv
 import logging
+import os
+from datetime import date, datetime
+from typing import Any, Dict, List, Optional
+
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from dotenv import load_dotenv
 
 # Set up logger
 logger = logging.getLogger(__name__)
 
 load_dotenv('.env.chatbot')
+load_dotenv('.env', override=False)
 
-API_BASE_URL = os.getenv('NODE_API_URL', 'http://localhost:5000/api')
-logger.info(f"API_BASE_URL loaded: {API_BASE_URL}")
+API_BASE_URL = os.getenv('NODE_API_URL')
+DATABASE_URL = os.getenv('DATABASE_URL')
+
+if API_BASE_URL:
+    logger.info(f"API_BASE_URL loaded: {API_BASE_URL}")
+else:
+    logger.warning("NODE_API_URL is not set. HTTP fallbacks will be unavailable.")
+
+if not DATABASE_URL:
+    logger.warning("DATABASE_URL is not set. Direct database queries will be unavailable.")
+
+
+def _serialize_value(value: Any) -> Any:
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return value
+
+
+def _serialize_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: _serialize_value(value) for key, value in record.items()}
+
+
+def _get_db_connection():
+    if not DATABASE_URL:
+        raise RuntimeError('DATABASE_URL is not configured')
+    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+
+
+def _fetch_doctors_from_db(name_filter: Optional[str] = None, specialization_filter: Optional[str] = None) -> List[Dict[str, Any]]:
+    query = 'SELECT id, name, specialization, phone, email, "createdAt", "updatedAt" FROM "Doctor"'
+    conditions = []
+    parameters: List[Any] = []
+
+    if name_filter:
+        conditions.append('LOWER(name) LIKE %s')
+        parameters.append(f'%{name_filter.lower()}%')
+
+    if specialization_filter:
+        conditions.append('LOWER(specialization) LIKE %s')
+        parameters.append(f'%{specialization_filter.lower()}%')
+
+    if conditions:
+        query += ' WHERE ' + ' AND '.join(conditions)
+
+    query += ' ORDER BY name ASC'
+
+    with _get_db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(query, parameters)
+            return [_serialize_record(dict(row)) for row in cursor.fetchall()]
+
+
+def _fetch_patient_appointments_from_db(patient_id: str) -> List[Dict[str, Any]]:
+    with _get_db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                '''
+                SELECT
+                    a.id,
+                    a."appointmentDate",
+                    a."reasonForVisit",
+                    a."durationInMinutes",
+                    a.status,
+                    a."createdAt",
+                    a."updatedAt",
+                    p.id AS "patientId",
+                    p.name AS "patientName",
+                    p.phone AS "patientPhone",
+                    p.email AS "patientEmail",
+                    p.dob AS "patientDob",
+                    d.id AS "doctorId",
+                    d.name AS "doctorName",
+                    d.specialization AS "doctorSpecialization",
+                    d.phone AS "doctorPhone",
+                    d.email AS "doctorEmail"
+                FROM "Appointment" a
+                INNER JOIN "Patient" p ON p.id = a."patientId"
+                INNER JOIN "Doctor" d ON d.id = a."doctorId"
+                WHERE a."patientId" = %s
+                ORDER BY a."appointmentDate" ASC
+                ''',
+                (patient_id,),
+            )
+            return [_serialize_record(dict(row)) for row in cursor.fetchall()]
 
 
 # ==================== API CALL FUNCTIONS ====================
@@ -25,6 +111,9 @@ async def call_api(endpoint: str, method: str = 'GET', data: Dict = None, params
     """
     Generic API caller
     """
+    if not API_BASE_URL:
+        return {'error': 'Configuration Error', 'detail': 'NODE_API_URL is not configured'}
+
     url = f"{API_BASE_URL}/{endpoint}"
     logger.info(f"Calling API: {method} {url}")
     
@@ -59,12 +148,17 @@ async def get_all_doctors() -> List[Dict]:
     Returns:
         List of doctors with their details (id, name, specialization, phone, email)
     """
-    result = await call_api('doctors')
-    
-    if 'error' in result:
-        return []
-    
-    return result
+    try:
+        return _fetch_doctors_from_db()
+    except Exception as db_error:
+        logger.warning(f"Direct database doctor lookup failed, falling back to API: {db_error}")
+        result = await call_api('doctors')
+
+        if 'error' in result:
+            logger.error(f"Doctor lookup failed via API too: {result}")
+            return []
+
+        return result
 
 
 async def find_doctors_by_specialization(specialization: str) -> List[Dict]:
@@ -77,15 +171,16 @@ async def find_doctors_by_specialization(specialization: str) -> List[Dict]:
     Returns:
         List of doctors matching the specialization
     """
-    all_doctors = await get_all_doctors()
-    
-    # Filter by specialization (case-insensitive)
-    matching_doctors = [
-        doc for doc in all_doctors
-        if specialization.lower() in doc.get('specialization', '').lower()
-    ]
-    
-    return matching_doctors
+    try:
+        return _fetch_doctors_from_db(specialization_filter=specialization)
+    except Exception as db_error:
+        logger.warning(f"Specialization lookup failed via DB, falling back to in-memory filter: {db_error}")
+        all_doctors = await get_all_doctors()
+
+        return [
+            doc for doc in all_doctors
+            if specialization.lower() in doc.get('specialization', '').lower()
+        ]
 
 
 async def find_doctor_by_name(name: str) -> Optional[Dict]:
@@ -98,14 +193,18 @@ async def find_doctor_by_name(name: str) -> Optional[Dict]:
     Returns:
         Doctor details if found, None otherwise
     """
-    all_doctors = await get_all_doctors()
-    
-    # Search by name (case-insensitive)
-    for doctor in all_doctors:
-        if name.lower() in doctor.get('name', '').lower():
-            return doctor
-    
-    return None
+    try:
+        doctors = _fetch_doctors_from_db(name_filter=name)
+        return doctors[0] if doctors else None
+    except Exception as db_error:
+        logger.warning(f"Name lookup failed via DB, falling back to in-memory search: {db_error}")
+        all_doctors = await get_all_doctors()
+
+        for doctor in all_doctors:
+            if name.lower() in doctor.get('name', '').lower():
+                return doctor
+
+        return None
 
 
 # ==================== APPOINTMENT FUNCTIONS ====================
@@ -120,14 +219,28 @@ async def get_patient_appointments(patient_id: str) -> List[Dict]:
     Returns:
         List of appointments with details
     """
-    # Note: This would need a new endpoint or direct DB access
-    # For now, returning a placeholder
-    result = await call_api(f'appointments/patient/{patient_id}')
-    
-    if 'error' in result:
-        return []
-    
-    return result
+    try:
+        appointments = _fetch_patient_appointments_from_db(patient_id)
+
+        # If the provided ID is actually a userId, look up the linked patient profile.
+        if not appointments:
+            with _get_db_connection() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute('SELECT id FROM "Patient" WHERE "userId" = %s LIMIT 1', (patient_id,))
+                    patient_row = cursor.fetchone()
+
+            if patient_row:
+                appointments = _fetch_patient_appointments_from_db(patient_row['id'])
+
+        return appointments
+    except Exception as db_error:
+        logger.warning(f"Patient appointment lookup failed via DB, falling back to API: {db_error}")
+        result = await call_api(f'appointments/patient/{patient_id}')
+
+        if 'error' in result:
+            return []
+
+        return result
 
 
 async def book_appointment(
