@@ -8,6 +8,7 @@ import logging
 import os
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -19,13 +20,26 @@ logger = logging.getLogger(__name__)
 load_dotenv('.env.chatbot')
 load_dotenv('.env', override=False)
 
-API_BASE_URL = os.getenv('NODE_API_URL')
+def _load_api_base_urls() -> List[str]:
+    urls: List[str] = []
+    for env_name in ('NODE_API_URL', 'CHATBOT_NODE_API_URL', 'BACKEND_API_URL'):
+        raw_value = os.getenv(env_name, '')
+        if not raw_value:
+            continue
+        for item in raw_value.split(','):
+            normalized = item.strip().rstrip('/')
+            if normalized and normalized not in urls:
+                urls.append(normalized)
+    return urls
+
+
+API_BASE_URLS = _load_api_base_urls()
 DATABASE_URL = os.getenv('DATABASE_URL')
 
-if API_BASE_URL:
-    logger.info(f"API_BASE_URL loaded: {API_BASE_URL}")
+if API_BASE_URLS:
+    logger.info(f"API base URLs loaded: {API_BASE_URLS}")
 else:
-    logger.warning("NODE_API_URL is not set. HTTP fallbacks will be unavailable.")
+    logger.warning("No API base URL env vars set. HTTP fallbacks will be unavailable.")
 
 if not DATABASE_URL:
     logger.warning("DATABASE_URL is not set. Direct database queries will be unavailable.")
@@ -111,32 +125,173 @@ async def call_api(endpoint: str, method: str = 'GET', data: Dict = None, params
     """
     Generic API caller
     """
-    if not API_BASE_URL:
-        return {'error': 'Configuration Error', 'detail': 'NODE_API_URL is not configured'}
+    if not API_BASE_URLS:
+        return {'error': 'Configuration Error', 'detail': 'API base URL is not configured'}
 
-    url = f"{API_BASE_URL}/{endpoint}"
-    logger.info(f"Calling API: {method} {url}")
-    
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            if method == 'GET':
-                response = await client.get(url, params=params)
-            elif method == 'POST':
-                response = await client.post(url, json=data)
-            elif method == 'PUT':
-                response = await client.put(url, json=data)
-            elif method == 'DELETE':
-                response = await client.delete(url)
-            
-            response.raise_for_status()
-            return response.json()
-    
-    except httpx.HTTPStatusError as e:
-        return {'error': f'API Error: {e.response.status_code}', 'detail': str(e)}
-    except httpx.RequestError as e:
-        return {'error': 'Connection Error', 'detail': str(e)}
-    except Exception as e:
-        return {'error': 'Unexpected Error', 'detail': str(e)}
+    last_error: Dict[str, Any] = {'error': 'Connection Error', 'detail': 'No API base URL could be reached'}
+
+    for base_url in API_BASE_URLS:
+        url = f"{base_url}/{endpoint}"
+        logger.info(f"Calling API: {method} {url}")
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                if method == 'GET':
+                    response = await client.get(url, params=params)
+                elif method == 'POST':
+                    response = await client.post(url, json=data)
+                elif method == 'PUT':
+                    response = await client.put(url, json=data)
+                elif method == 'DELETE':
+                    response = await client.delete(url)
+                else:
+                    return {'error': 'Configuration Error', 'detail': f'Unsupported HTTP method: {method}'}
+
+                response.raise_for_status()
+                return response.json()
+
+        except httpx.HTTPStatusError as e:
+            last_error = {'error': f'API Error: {e.response.status_code}', 'detail': str(e), 'url': url}
+            logger.warning(f"API call failed with status for {url}: {last_error}")
+        except httpx.RequestError as e:
+            last_error = {'error': 'Connection Error', 'detail': str(e), 'url': url}
+            logger.warning(f"API connection failed for {url}: {last_error}")
+        except Exception as e:
+            last_error = {'error': 'Unexpected Error', 'detail': str(e), 'url': url}
+            logger.warning(f"Unexpected API error for {url}: {last_error}")
+
+    return last_error
+
+
+def _resolve_patient_id_for_booking(patient_phone: str, patient_email: str) -> Optional[str]:
+    with _get_db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT id FROM "Patient" WHERE phone = %s LIMIT 1', (patient_phone,))
+            row = cursor.fetchone()
+            if row:
+                return row['id']
+
+            if patient_email:
+                cursor.execute('SELECT id FROM "Patient" WHERE email = %s LIMIT 1', (patient_email,))
+                row = cursor.fetchone()
+                if row:
+                    return row['id']
+
+    return None
+
+
+def _check_booking_conflict(doctor_id: str, appointment_dt: datetime, duration_minutes: int) -> bool:
+    day_start = appointment_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end = appointment_dt.replace(hour=23, minute=59, second=59, microsecond=999000)
+
+    with _get_db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                '''
+                SELECT "appointmentDate", "durationInMinutes"
+                FROM "Appointment"
+                WHERE "doctorId" = %s
+                  AND status <> 'Cancelled'
+                  AND "appointmentDate" >= %s
+                  AND "appointmentDate" <= %s
+                ''',
+                (doctor_id, day_start, day_end),
+            )
+            appointments = cursor.fetchall()
+
+    new_start = appointment_dt
+    new_end = appointment_dt.timestamp() + (duration_minutes * 60)
+
+    for appointment in appointments:
+        existing_start = appointment['appointmentDate']
+        existing_end = existing_start.timestamp() + (appointment['durationInMinutes'] * 60)
+        if existing_start.timestamp() < new_end and existing_end > new_start.timestamp():
+            return True
+
+    return False
+
+
+def _book_appointment_in_db(
+    patient_phone: str,
+    patient_name: str,
+    patient_email: str,
+    doctor_id: str,
+    appointment_date: str,
+    reason_for_visit: str,
+    duration_minutes: int,
+) -> Dict[str, Any]:
+    patient_id = _resolve_patient_id_for_booking(patient_phone, patient_email)
+    if not patient_id:
+        return {
+            'error': 'Patient Not Found',
+            'detail': 'No patient profile found for this phone/email. Please complete patient registration first.'
+        }
+
+    appointment_dt = datetime.fromisoformat(appointment_date.replace('Z', '+00:00'))
+
+    if _check_booking_conflict(doctor_id, appointment_dt, duration_minutes):
+        return {'error': 'Conflict', 'detail': 'This time slot conflicts with an existing appointment.'}
+
+    now = datetime.utcnow()
+    appointment_id = f"cb_{uuid4().hex}"
+
+    with _get_db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                '''
+                INSERT INTO "Appointment" (
+                    id,
+                    "appointmentDate",
+                    "reasonForVisit",
+                    "durationInMinutes",
+                    status,
+                    "createdAt",
+                    "updatedAt",
+                    "patientId",
+                    "doctorId"
+                ) VALUES (%s, %s, %s, %s, 'Scheduled', %s, %s, %s, %s)
+                RETURNING id
+                ''',
+                (
+                    appointment_id,
+                    appointment_dt,
+                    reason_for_visit,
+                    int(duration_minutes),
+                    now,
+                    now,
+                    patient_id,
+                    doctor_id,
+                ),
+            )
+            new_id = cursor.fetchone()['id']
+
+            cursor.execute(
+                '''
+                SELECT
+                    a.id,
+                    a."appointmentDate",
+                    a."reasonForVisit",
+                    a."durationInMinutes",
+                    a.status,
+                    a."createdAt",
+                    a."updatedAt",
+                    p.id AS "patientId",
+                    p.name AS "patientName",
+                    p.phone AS "patientPhone",
+                    p.email AS "patientEmail",
+                    d.id AS "doctorId",
+                    d.name AS "doctorName",
+                    d.specialization AS "doctorSpecialization"
+                FROM "Appointment" a
+                INNER JOIN "Patient" p ON p.id = a."patientId"
+                INNER JOIN "Doctor" d ON d.id = a."doctorId"
+                WHERE a.id = %s
+                ''',
+                (new_id,),
+            )
+            row = cursor.fetchone()
+
+    return _serialize_record(dict(row)) if row else {'id': appointment_id}
 
 
 # ==================== DOCTOR FUNCTIONS ====================
@@ -267,20 +422,32 @@ async def book_appointment(
     Returns:
         Created appointment details or error
     """
+    try:
+        return _book_appointment_in_db(
+            patient_phone=patient_phone,
+            patient_name=patient_name,
+            patient_email=patient_email,
+            doctor_id=str(doctor_id),
+            appointment_date=appointment_date,
+            reason_for_visit=reason_for_visit,
+            duration_minutes=duration_minutes,
+        )
+    except Exception as db_error:
+        logger.warning(f"Direct DB booking failed, falling back to API: {db_error}")
+
     appointment_data = {
         'patient': {
             'phone': patient_phone,
             'name': patient_name,
             'email': patient_email,
         },
-        'doctorId': str(doctor_id),  # Ensure it's a string
+        'doctorId': str(doctor_id),
         'appointmentDate': appointment_date,
         'reasonForVisit': reason_for_visit,
         'durationInMinutes': duration_minutes,
     }
-    
-    result = await call_api('appointments', method='POST', data=appointment_data)
-    return result
+
+    return await call_api('appointments', method='POST', data=appointment_data)
 
 
 async def check_doctor_availability(doctor_id: str, date: str) -> Dict:
