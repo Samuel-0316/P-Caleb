@@ -10,6 +10,8 @@ const Chatbot = () => {
   const chatBodyRef = useRef(null);
   const [initialMessageShown, setInitialMessageShown] = useState(false);
   const [showQuickReplies, setShowQuickReplies] = useState(true);
+  const [sessionId, setSessionId] = useState(null);
+  const [lastUserId, setLastUserId] = useState(null);
 
   const quickReplyOptions = [
     { label: "1️⃣ Find Doctors", value: "Show me all available doctors" },
@@ -18,13 +20,39 @@ const Chatbot = () => {
     { label: "4️⃣ My Appointments", value: "Show my appointments" }
   ];
 
-  // Add welcome message when chat opens for the first time
+  // Generate unique session ID and detect logout on chat open
   useEffect(() => {
     if (isOpen && !initialMessageShown && !isMinimized) {
+      // Check current user from localStorage
+      const userDataStr = localStorage.getItem('user');
+      let currentUserId = null;
+      
+      if (userDataStr) {
+        try {
+          const parsedData = JSON.parse(userDataStr);
+          currentUserId = parsedData.id || parsedData.patientId;
+        } catch (e) {
+          console.error('Error parsing user data:', e);
+        }
+      }
+      
+      // If user changed (logout then login, or login as different user), clear chat history
+      if (lastUserId && lastUserId !== currentUserId) {
+        setMessages([]);
+        setInitialMessageShown(false);
+      }
+      
+      setLastUserId(currentUserId);
+      
+      // Generate a new unique session ID for this conversation
+      const newSessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      setSessionId(newSessionId);
+      
+      // Show welcome message
       setMessages([{ text: "Hello! 👋 How can I help you with your appointments today?", sender: "bot" }]);
       setInitialMessageShown(true);
     }
-  }, [isOpen, initialMessageShown, isMinimized]);
+  }, [isOpen, initialMessageShown, isMinimized, lastUserId]);
 
   // Auto-scroll to bottom whenever messages change
   useEffect(() => {
@@ -153,7 +181,7 @@ const Chatbot = () => {
           console.warn('No user data found in localStorage');
         }
         
-        // Send message to Python agent backend
+        // Send message to Python agent backend with unique session ID
         const chatbotUrl = import.meta.env.VITE_CHATBOT_URL || 'http://localhost:8000/api/chatbot';
         const response = await fetch(chatbotUrl, {
           method: 'POST',
@@ -162,7 +190,7 @@ const Chatbot = () => {
           },
           body: JSON.stringify({
             message: userMessage,
-            session_id: patientInfo.id || 'anonymous',
+            session_id: sessionId || 'anonymous',
             patient_info: patientInfo
           }),
         });

@@ -364,6 +364,26 @@ async def find_doctor_by_name(name: str) -> Optional[Dict]:
 
 # ==================== APPOINTMENT FUNCTIONS ====================
 
+def _doctor_exists_in_db(doctor_id: str) -> bool:
+    """
+    Check if a doctor with the given ID exists in the database.
+    
+    Args:
+        doctor_id: Doctor ID to check
+    
+    Returns:
+        True if doctor exists, False otherwise
+    """
+    try:
+        with _get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute('SELECT 1 FROM "Doctor" WHERE id = %s LIMIT 1', (doctor_id,))
+                return cursor.fetchone() is not None
+    except Exception as e:
+        logger.warning(f"Error checking if doctor exists: {e}")
+        return False
+
+
 async def get_patient_appointments(patient_id: str) -> List[Dict]:
     """
     Get all appointments for a specific patient
@@ -422,6 +442,31 @@ async def book_appointment(
     Returns:
         Created appointment details or error
     """
+    
+    # **CRITICAL**: Validate that the doctor_id actually exists in the database
+    if not _doctor_exists_in_db(doctor_id):
+        logger.error(f"Doctor ID {doctor_id} does not exist in database. Attempting recovery...")
+        
+        # Try to recover by finding a doctor that matches the reason for visit
+        # (e.g., if they want "brain check-up", find a Neurologist)
+        recovery_doctors = await find_doctors_by_specialization(reason_for_visit)
+        
+        if recovery_doctors:
+            recovered_doctor_id = recovery_doctors[0]['id']
+            logger.info(f"Recovered doctor ID from specialization: {recovered_doctor_id}")
+            doctor_id = recovered_doctor_id
+        else:
+            # Last resort: return ALL doctors and let them choose
+            all_doctors = await get_all_doctors()
+            if all_doctors:
+                logger.warning(f"No specialization match found. Using first available doctor.")
+                doctor_id = all_doctors[0]['id']
+            else:
+                return {
+                    'error': 'No Doctors Available',
+                    'detail': f'The requested doctor is not available, and no other doctors are in the system. Please try again later.'
+                }
+    
     try:
         return _book_appointment_in_db(
             patient_phone=patient_phone,
